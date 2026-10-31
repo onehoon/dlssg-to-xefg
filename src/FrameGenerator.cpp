@@ -43,24 +43,19 @@ static void XeFGLogCallback(const char* message, xefgd_logging_level_t level, vo
 		Log::Warn("XeFG: {}", message);
 		break;
 	default:
-		Log::Info("XeFG: {}", message);
 		break;
 	}
 }
 
 static ComPtr<ID3D12Resource> CreateTexture(ID3D12Device* device, D3D12_RESOURCE_DESC desc,
-	D3D12_RESOURCE_STATES state, const wchar_t* name)
+	D3D12_RESOURCE_STATES state, const wchar_t* name, HRESULT& result)
 {
 	ComPtr<ID3D12Resource> texture;
 	D3D12_HEAP_PROPERTIES heap{ D3D12_HEAP_TYPE_DEFAULT };
 
-	if (HRESULT hr = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, state, nullptr,
-		IID_PPV_ARGS(&texture));
-		FAILED(hr))
-	{
-		Log::Error("CreateCommittedResource error: {:X}", (uint32_t)hr);
+	result = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, state, nullptr, IID_PPV_ARGS(&texture));
+	if (FAILED(result))
 		return nullptr;
-	}
 
 	texture->SetName(name);
 	return texture;
@@ -125,6 +120,16 @@ static const char* FormatName(DXGI_FORMAT format)
 	}
 }
 
+static const char* UiModeName(uint32_t mode)
+{
+	switch (mode)
+	{
+	case XEFGD_UI_MODE_AUTO: return "auto";
+	case XEFGD_UI_MODE_BACKBUFFER_HUDLESS: return "backbuffer-hudless";
+	default: return "unknown";
+	}
+}
+
 static std::string DescribeResource(std::string_view name, ID3D12Resource* resource)
 {
 	if (!resource)
@@ -135,20 +140,6 @@ static std::string DescribeResource(std::string_view name, ID3D12Resource* resou
 		name, ResourceDimensionName(desc.Dimension), static_cast<uint32_t>(desc.Dimension), desc.Width, desc.Height,
 		desc.DepthOrArraySize, desc.MipLevels, FormatName(desc.Format), static_cast<uint32_t>(desc.Format),
 		static_cast<uint32_t>(desc.Flags), desc.SampleDesc.Count, desc.SampleDesc.Quality);
-}
-
-std::string FrameGenerator::DescribeSubrect(std::string_view name, const SubrectInfo& info)
-{
-	if (!info.hasResource)
-		return std::format("{}Subrect{{resource=absent}}", name);
-
-	const uint32_t provided = (info.baseXProvided ? 1u : 0u) | (info.baseYProvided ? 2u : 0u) |
-		(info.widthProvided ? 4u : 0u) | (info.heightProvided ? 8u : 0u);
-	const char* fallbackReason = !info.fallback ? "no" :
-		(!info.widthProvided || !info.heightProvided ? "full:missing-size" : "full:zero-size");
-	return std::format("{}Subrect{{providedMask=0x{:X},raw=({},{},{},{}),fallback={},resolved=({},{},{},{}),valid={}}}",
-		name, provided, info.rawBaseX, info.rawBaseY, info.rawWidth, info.rawHeight, fallbackReason,
-		info.region.base.x, info.region.base.y, info.region.size.x, info.region.size.y, info.valid ? "yes" : "no");
 }
 
 static XMFLOAT3 GetVector(const NGXParameter& params, const char* name)
@@ -237,22 +228,10 @@ static bool IsUnrealEngine()
 	return isUnreal;
 }
 
-struct ProjectionDiagnostics
-{
-	float outputAspect = 0.0f;
-	float cameraAspect = 0.0f;
-	float usedAspect = 0.0f;
-	bool cameraAspectProvided = false;
-	bool matrixGenerated = false;
-	const char* cameraPath = "not-evaluated";
-};
-
 // Left handed perspective matrix (row vectors) matching the depth buffer: inverted depth swaps near and far,
 // cameraFar == 0 means an infinite far plane
-static bool GetProjectionMatrix(const NGXParameter& params, bool depthInverted, float aspectRatio, float* out,
-	ProjectionDiagnostics& diagnostics)
+static bool GetProjectionMatrix(const NGXParameter& params, bool depthInverted, float aspectRatio, float* out)
 {
-	const float outputAspect = aspectRatio;
 	float cameraNear = 0.0f;
 	float cameraFar = 0.0f;
 	float fov = 0.0f;
@@ -260,13 +239,11 @@ static bool GetProjectionMatrix(const NGXParameter& params, bool depthInverted, 
 	// Unreal doesn't pass a correct CameraViewToClip, its separate camera values are fine
 	if (!IsUnrealEngine() && CameraFromViewToClip(params, cameraNear, cameraFar, fov))
 	{
-		diagnostics.cameraPath = "CameraViewToClip";
 		if (depthInverted)
 			std::swap(cameraNear, cameraFar);
 	}
 	else
 	{
-		diagnostics.cameraPath = "CameraNearFarFOV";
 		cameraNear = params.GetOr("DLSSG.CameraNear", 0.0f);
 		cameraFar = params.GetOr("DLSSG.CameraFar", 0.0f);
 		fov = params.GetOr("DLSSG.CameraFOV", 0.0f);
@@ -277,12 +254,9 @@ static bool GetProjectionMatrix(const NGXParameter& params, bool depthInverted, 
 	}
 
 	float paramAspectRatio = 0.0f;
-	diagnostics.cameraAspectProvided = params.Get("DLSSG.CameraAspectRatio", &paramAspectRatio) == NGX_SUCCESS;
-	diagnostics.outputAspect = outputAspect;
-	diagnostics.cameraAspect = paramAspectRatio;
+	params.Get("DLSSG.CameraAspectRatio", &paramAspectRatio);
 	if (paramAspectRatio > 0.0f)
 		aspectRatio = paramAspectRatio;
-	diagnostics.usedAspect = aspectRatio;
 
 	if (cameraNear <= 0.0f || cameraFar < 0.0f || fov <= 0.0f || aspectRatio <= 0.0f)
 		return false;
@@ -312,7 +286,6 @@ static bool GetProjectionMatrix(const NGXParameter& params, bool depthInverted, 
 
 	const float projection[16] = { w, 0, 0, 0, 0, h, 0, 0, 0, 0, a, 1, 0, 0, b, 0 };
 	memcpy(out, projection, sizeof(projection));
-	diagnostics.matrixGenerated = true;
 	return true;
 }
 
@@ -330,7 +303,7 @@ bool FrameGenerator::CreateContext()
 		return false;
 	}
 
-	XeFG::SetLoggingCallback(newContext->handle, XEFGD_LOGGING_LEVEL_INFO, XeFGLogCallback);
+	XeFG::SetLoggingCallback(newContext->handle, XEFGD_LOGGING_LEVEL_WARNING, XeFGLogCallback);
 
 	xefgd_init_params_t initParams{};
 	initParams.outputResolution = { settings.width, settings.height };
@@ -339,20 +312,19 @@ bool FrameGenerator::CreateContext()
 	initParams.maxInterpolatedFrames = MaxFrames;
 	initParams.uiMode = settings.uiMode;
 
-	Log::Info("Creating XeFG context: {}x{}, format: {}, flags: {:X}, ui mode: {}", settings.width, settings.height,
-		(uint32_t)settings.format, settings.initFlags, settings.uiMode);
-
 	if (auto result = XeFG::Init(newContext->handle, initParams); result != XEFGD_RESULT_SUCCESS)
 	{
 		Log::Error("XeFG Init error: {}", result);
 		return false;
 	}
 
+	Log::Info("XeFG context created: {}x{}, format={}, flags=0x{:X}, uiMode={}", settings.width, settings.height,
+		FormatName(settings.format), settings.initFlags, UiModeName(settings.uiMode));
 	context = std::move(newContext);
 	return true;
 }
 
-FrameGenerator::SubrectInfo FrameGenerator::ReadSubrect(const NGXParameter& params, const char* name,
+FrameGenerator::SubrectInfo FrameGenerator::ReadSubrect(const NGXParameter& params, const SubrectParameterKeys& keys,
 	ID3D12Resource* resource)
 {
 	SubrectInfo info{};
@@ -360,23 +332,56 @@ FrameGenerator::SubrectInfo FrameGenerator::ReadSubrect(const NGXParameter& para
 		return info;
 
 	info.hasResource = true;
-	auto key = [name](const char* field) { return std::format("DLSSG.{}Subrect{}", name, field); };
-	info.baseXProvided = params.Get(key("BaseX").c_str(), &info.rawBaseX) == NGX_SUCCESS;
-	info.baseYProvided = params.Get(key("BaseY").c_str(), &info.rawBaseY) == NGX_SUCCESS;
-	info.widthProvided = params.Get(key("Width").c_str(), &info.rawWidth) == NGX_SUCCESS;
-	info.heightProvided = params.Get(key("Height").c_str(), &info.rawHeight) == NGX_SUCCESS;
+	info.providedMask = (params.Get(keys.baseX, &info.rawBaseX) == NGX_SUCCESS ? 1u : 0u) |
+		(params.Get(keys.baseY, &info.rawBaseY) == NGX_SUCCESS ? 2u : 0u) |
+		(params.Get(keys.width, &info.rawWidth) == NGX_SUCCESS ? 4u : 0u) |
+		(params.Get(keys.height, &info.rawHeight) == NGX_SUCCESS ? 8u : 0u);
 
 	const auto desc = resource->GetDesc();
 	const auto resolved = ResolveSubrect(desc.Width, desc.Height, info.rawBaseX, info.rawBaseY,
 		info.rawWidth, info.rawHeight);
 	info.region.base = { resolved.baseX, resolved.baseY };
 	info.region.size = { resolved.width, resolved.height };
-	info.fallback = resolved.fallback;
 	info.valid = resolved.valid;
 	return info;
 }
 
-void FrameGenerator::ReportDiagnosticIssue(std::string_view level, std::string key, std::string message)
+void FrameGenerator::ResolveFrameSubrects(const NGXParameter& params)
+{
+	static constexpr SubrectParameterKeys keys[] = {
+		{ "Backbuffer", "DLSSG.BackbufferSubrectBaseX", "DLSSG.BackbufferSubrectBaseY",
+			"DLSSG.BackbufferSubrectWidth", "DLSSG.BackbufferSubrectHeight" },
+		{ "HUDLess", "DLSSG.HUDLessSubrectBaseX", "DLSSG.HUDLessSubrectBaseY",
+			"DLSSG.HUDLessSubrectWidth", "DLSSG.HUDLessSubrectHeight" },
+		{ "Depth", "DLSSG.DepthSubrectBaseX", "DLSSG.DepthSubrectBaseY",
+			"DLSSG.DepthSubrectWidth", "DLSSG.DepthSubrectHeight" },
+		{ "MVecs", "DLSSG.MVecsSubrectBaseX", "DLSSG.MVecsSubrectBaseY",
+			"DLSSG.MVecsSubrectWidth", "DLSSG.MVecsSubrectHeight" },
+	};
+	ID3D12Resource* resources[] = {
+		params.GetOr<ID3D12Resource*>("DLSSG.Backbuffer", nullptr),
+		params.GetOr<ID3D12Resource*>("DLSSG.HUDLess", nullptr),
+		params.GetOr<ID3D12Resource*>("DLSSG.Depth", nullptr),
+		params.GetOr<ID3D12Resource*>("DLSSG.MVecs", nullptr),
+	};
+
+	for (size_t i = 0; i < frameSubrects.size(); i++)
+	{
+		auto& info = frameSubrects[i];
+		info = ReadSubrect(params, keys[i], resources[i]);
+		if (info.hasResource && !info.valid)
+		{
+			const auto& region = info.region;
+			ReportIssue("warn", std::format("subrect:{}:invalid", keys[i].name),
+				std::format("Invalid {} Subrect: provided=0x{:X}, raw=({},{},{},{}), resolved=({},{},{},{}), resource={}",
+					keys[i].name, info.providedMask, info.rawBaseX, info.rawBaseY, info.rawWidth, info.rawHeight,
+					region.base.x, region.base.y, region.size.x, region.size.y,
+					DescribeResource(keys[i].name, resources[i])));
+		}
+	}
+}
+
+void FrameGenerator::ReportIssue(std::string_view level, std::string key, std::string message)
 {
 	auto issue = issueCounts.find(key);
 	if (issue == issueCounts.end())
@@ -392,115 +397,37 @@ void FrameGenerator::ReportDiagnosticIssue(std::string_view level, std::string k
 		Log::Write(level, count == 1 ? message : std::format("{} (same issue observed {} times)", message, count));
 }
 
-void FrameGenerator::SetOutputBase(uint32_t x, uint32_t y, bool usesSubrect)
+void FrameGenerator::SetOutputBase(uint32_t x, uint32_t y)
 {
-	if (!context)
+	if (context)
+		std::fill(std::begin(context->outputBases), std::end(context->outputBases), xefgd_2d_t{ x, y });
+}
+
+void FrameGenerator::LogOutputLayout(const SubrectInfo& subrect, D3D12_RESOURCE_DESC outputDesc,
+	uint32_t outputBaseX, uint32_t outputBaseY, bool usesSubrect)
+{
+	if (!subrect.valid)
 		return;
 
-	std::fill(std::begin(context->outputBases), std::end(context->outputBases), xefgd_2d_t{ x, y });
+	const auto& region = subrect.region;
+	const OutputLayout layout{ outputDesc.Width, outputDesc.Height, region.base.x, region.base.y, region.size.x,
+		region.size.y, outputBaseX, outputBaseY, usesSubrect };
+	if (hasOutputLayout && layout == lastOutputLayout)
+		return;
 
-	if (!hasLoggedOutputBase || x != lastLoggedOutputBase.x || y != lastLoggedOutputBase.y ||
-		usesSubrect != lastLoggedOutputBaseUsesSubrect)
+	if (usesSubrect)
 	{
-		Log::Info("XeFG output base changed: {} ({},{})", usesSubrect ? "subrect" : "origin", x, y);
-		lastLoggedOutputBase = { x, y };
-		lastLoggedOutputBaseUsesSubrect = usesSubrect;
-		hasLoggedOutputBase = true;
+		Log::Info("Letterbox region: ({},{},{},{}); output base=({},{})", region.base.x, region.base.y,
+			region.size.x, region.size.y, outputBaseX, outputBaseY);
 	}
-}
-
-void FrameGenerator::BeginFrameDiagnostics(const NGXParameter& params)
-{
-	diagnosticRealFrameCount++;
-	pendingFrameDiagnostics.clear();
-	pendingCopyDiagnostics.clear();
-	pendingCallDiagnostics.clear();
-	std::fill(executeResults.begin(), executeResults.end(), std::numeric_limits<int32_t>::min());
-
-	auto backbuffer = params.GetOr<ID3D12Resource*>("DLSSG.Backbuffer", nullptr);
-	auto hudless = params.GetOr<ID3D12Resource*>("DLSSG.HUDLess", nullptr);
-	auto depth = params.GetOr<ID3D12Resource*>("DLSSG.Depth", nullptr);
-	auto mvecs = params.GetOr<ID3D12Resource*>("DLSSG.MVecs", nullptr);
-	auto outputReal = params.GetOr<ID3D12Resource*>("DLSSG.OutputReal", nullptr);
-	auto output = params.GetOr<ID3D12Resource*>("DLSSG.OutputInterpolated", nullptr);
-
-	pendingFrameDiagnostics = std::format("{}; {}; {}; {}; {}; {}",
-		DescribeResource("Backbuffer", backbuffer), DescribeResource("HUDLess", hudless),
-		DescribeResource("Depth", depth), DescribeResource("MVecs", mvecs),
-		DescribeResource("OutputReal", outputReal), DescribeResource("OutputInterpolated", output));
-
-	const char* subrectNames[] = { "Backbuffer", "HUDLess", "Depth", "MVecs" };
-	ID3D12Resource* subrectResources[] = { backbuffer, hudless, depth, mvecs };
-	for (size_t i = 0; i < std::size(pendingSubrects); i++)
+	else if (hasOutputLayout)
 	{
-		pendingSubrects[i] = ReadSubrect(params, subrectNames[i], subrectResources[i]);
-		pendingFrameDiagnostics += std::format("; {}", DescribeSubrect(subrectNames[i], pendingSubrects[i]));
-
-		if (pendingSubrects[i].hasResource && !pendingSubrects[i].valid)
-		{
-			const std::string key = std::format("subrect:{}:{}", subrectNames[i], DescribeSubrect(subrectNames[i], pendingSubrects[i]));
-			ReportDiagnosticIssue("warn", key,
-				std::format("Invalid {} Subrect for {}", subrectNames[i], DescribeResource(subrectNames[i], subrectResources[i])));
-		}
+		Log::Info("Output layout changed: BackbufferSubrect=({},{},{},{}); output base=({},{})", region.base.x,
+			region.base.y, region.size.x, region.size.y, outputBaseX, outputBaseY);
 	}
 
-	float cameraAspect = 0.0f;
-	const bool cameraAspectProvided = params.Get("DLSSG.CameraAspectRatio", &cameraAspect) == NGX_SUCCESS;
-	const uint32_t enableInterp = params.GetOr<uint32_t>("DLSSG.EnableInterp", 1);
-	const uint32_t reset = params.GetOr<uint32_t>("DLSSG.Reset", 0);
-	const uint32_t depthInverted = params.GetOr<uint32_t>("DLSSG.DepthInverted", 0);
-	const uint32_t mvecJittered = params.GetOr<uint32_t>("DLSSG.MvecJittered", 0);
-	const uint32_t requestedFrameIndex = params.GetOr<uint32_t>("DLSSG.MultiFrameIndex", 1);
-	const uint32_t requestedFrameCount = params.GetOr<uint32_t>("DLSSG.MultiFrameCount", 1);
-	pendingFrameDiagnostics += std::format(
-		"; NGX{{MultiFrameIndex={},MultiFrameCount={},Reset={},EnableInterp={},DepthInverted={},MvecJittered={},CameraAspectRatio={{provided={},value={}}}}}",
-		requestedFrameIndex, requestedFrameCount, reset, enableInterp, depthInverted, mvecJittered,
-		cameraAspectProvided ? "yes" : "no", cameraAspect);
-	pendingFrameSignature = pendingFrameDiagnostics;
-}
-
-void FrameGenerator::FinishFrameDiagnostics(uint32_t frameIndex, uint32_t frameCount, NGXResult result)
-{
-	if (pendingFrameDiagnostics.find("XeFGInit{") == std::string::npos)
-		pendingFrameDiagnostics += std::format("; XeFGInit{{resolution=not-created-this-call,contextAvailable={}}}",
-			context ? "yes" : "no");
-	if (pendingFrameDiagnostics.find("Projection{") == std::string::npos)
-		pendingFrameDiagnostics += "; Projection{path=not-evaluated}";
-	pendingFrameSignature = pendingFrameDiagnostics;
-
-	std::string outputs;
-	std::string bases = "not-created";
-	if (context)
-	{
-		bases.clear();
-		for (uint32_t i = 0; i < frameCount; i++)
-		{
-			if (i)
-				bases += ",";
-			bases += std::format("{}:{}", context->outputBases[i].x, context->outputBases[i].y);
-			outputs += std::format("; XeFGOutput[{}]={}", i, DescribeResource("resource", context->outputs[i].Get()));
-		}
-	}
-
-	std::string executions;
-	for (uint32_t i = 0; i < frameCount; i++)
-	{
-		if (i)
-			executions += ",";
-		if (executeResults[i] == std::numeric_limits<int32_t>::min())
-			executions += "not-run";
-		else
-			executions += std::format("{}", executeResults[i]);
-	}
-
-	const std::string copyDetails = pendingCopyDiagnostics.empty() ? "none" : pendingCopyDiagnostics;
-	const std::string signature = std::format("{}; calls={}; copies={}; outputBases={}; execute={}; ngxResult=0x{:X}{}",
-		pendingFrameSignature, pendingCallDiagnostics, copyDetails, bases, executions, result, outputs);
-	if (diagnosticRealFrameCount <= 120 || signature != lastFrameSignature)
-	{
-		Log::Info("Frame diagnostics #{} (call {}/{}): {}", diagnosticRealFrameCount, frameIndex, frameCount, signature);
-		lastFrameSignature = signature;
-	}
+	lastOutputLayout = layout;
+	hasOutputLayout = true;
 }
 
 bool FrameGenerator::CopyChecked(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* destination,
@@ -510,16 +437,14 @@ bool FrameGenerator::CopyChecked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 	if (!destination || !source)
 	{
 		const std::string message = std::format("Blocked CopyResource [{}]: destination/source is null", operation);
-		ReportDiagnosticIssue("error", std::format("copy:{}:null", operation), message);
-		pendingCopyDiagnostics += std::format("; {}=blocked:null", operation);
+		ReportIssue("error", std::format("copy:{}:null", operation), message);
 		return false;
 	}
 	if (!AreDistinctCopyResources(destination, source))
 	{
 		const std::string message = std::format("Blocked CopyResource [{}]: source and destination are the same resource: {}",
 			operation, DescribeResource("resource", destination));
-		ReportDiagnosticIssue("error", std::format("copy:{}:same-resource", operation), message);
-		pendingCopyDiagnostics += std::format("; {}=blocked:same-resource", operation);
+		ReportIssue("error", std::format("copy:{}:same-resource", operation), message);
 		return false;
 	}
 
@@ -531,11 +456,7 @@ bool FrameGenerator::CopyChecked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 		const std::string message = std::format("Blocked CopyResource [{}], mismatch={}: destination {}; source {}",
 			operation, ResourceCopyMismatchName(check.mismatch), DescribeResource("destination", destination),
 			DescribeResource("source", source));
-		const std::string key = std::format("copy:{}:{}:{}:{}", operation,
-			ResourceCopyMismatchName(check.mismatch), DescribeResource("destination", destination),
-			DescribeResource("source", source));
-		ReportDiagnosticIssue("error", key, message);
-		pendingCopyDiagnostics += std::format("; {}=blocked:{}", operation, ResourceCopyMismatchName(check.mismatch));
+		ReportIssue("error", std::format("copy:{}:{}", operation, ResourceCopyMismatchName(check.mismatch)), message);
 		return false;
 	}
 
@@ -544,14 +465,7 @@ bool FrameGenerator::CopyChecked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 		const std::string message = std::format("CopyResource [{}] compatibility is unknown ({}): destination {}; source {}; preserving existing copy",
 			operation, ResourceCopyMismatchName(check.mismatch), DescribeResource("destination", destination),
 			DescribeResource("source", source));
-		const std::string key = std::format("copy-unknown:{}:{}:{}", operation,
-			DescribeResource("destination", destination), DescribeResource("source", source));
-		ReportDiagnosticIssue("warn", key, message);
-		pendingCopyDiagnostics += std::format("; {}=copied:unknown", operation);
-	}
-	else
-	{
-		pendingCopyDiagnostics += std::format("; {}=copied:compatible", operation);
+		ReportIssue("warn", std::format("copy-unknown:{}:{}", operation, ResourceCopyMismatchName(check.mismatch)), message);
 	}
 
 	Copy(cmdList, destination, destinationState, source, sourceState);
@@ -588,7 +502,14 @@ FrameGenerator::CaptureResult FrameGenerator::Capture(ID3D12GraphicsCommandList*
 	}
 
 	if (!copy)
-		copy = CreateTexture(device.Get(), desc, XeFGInputState, L"dlssg-to-xefg input copy");
+	{
+		HRESULT allocationResult = S_OK;
+		copy = CreateTexture(device.Get(), desc, XeFGInputState, L"dlssg-to-xefg input copy", allocationResult);
+		if (!copy)
+			ReportIssue("error", std::format("texture-allocation:{}", operation),
+				std::format("Failed to allocate {} copy {}x{} format={} (HRESULT 0x{:08X})", operation, desc.Width,
+					desc.Height, FormatName(desc.Format), static_cast<uint32_t>(allocationResult)));
+	}
 
 	if (!copy)
 		return CaptureResult::Failed;
@@ -635,14 +556,7 @@ bool FrameGenerator::CaptureRealFrame(ID3D12GraphicsCommandList* cmdList, const 
 		createFailed = !CreateContext();
 
 	if (!context)
-	{
-		pendingFrameDiagnostics += std::format(
-			"; XeFGInit{{resolution={}x{},matchesOutputInterpolated={},contextCreated=no}}; Projection{{path=not-evaluated}}",
-			settings.width, settings.height,
-			(uint64_t)settings.width == outputDesc.Width && settings.height == outputDesc.Height ? "yes" : "no");
-		pendingFrameSignature = pendingFrameDiagnostics;
 		return true;
-	}
 
 	context->current ^= 1;
 	auto& frame = context->frames[context->current];
@@ -657,40 +571,29 @@ bool FrameGenerator::CaptureRealFrame(ID3D12GraphicsCommandList* cmdList, const 
 	{
 		context->pairValid = false;
 		frame.valid = false;
-		SetOutputBase(0, 0, false);
+		SetOutputBase(0, 0);
 		return false;
 	}
 	const bool captured = backbufferCapture == CaptureResult::Captured && depthCapture == CaptureResult::Captured &&
 		mvecsCapture == CaptureResult::Captured;
-	frame.backbufferSubrectValid = pendingSubrects[0].valid;
+	frame.backbufferSubrectValid = frameSubrects[0].valid;
 
 	auto& data = frame.data;
 	data = {};
 
 	if (captured)
 	{
-		data.backBuffer = pendingSubrects[0].region;
-		data.depth = pendingSubrects[2].region;
-		data.motionVectors = pendingSubrects[3].region;
+		data.backBuffer = frameSubrects[0].region;
+		data.depth = frameSubrects[2].region;
+		data.motionVectors = frameSubrects[3].region;
 
 		if (hudless)
-			data.hudlessColor = pendingSubrects[1].region;
+			data.hudlessColor = frameSubrects[1].region;
 	}
 
 	GetViewMatrix(params, data.viewMatrix);
-	ProjectionDiagnostics projection{};
 	GetProjectionMatrix(params, depthInverted, (float)settings.width / (float)settings.height,
-		data.projectionMatrix, projection);
-	const auto& backbufferRegion = pendingSubrects[0].region;
-	const float subrectAspect = backbufferRegion.size.y == 0 ? 0.0f :
-		(float)backbufferRegion.size.x / (float)backbufferRegion.size.y;
-	pendingFrameDiagnostics += std::format(
-		"; XeFGInit{{resolution={}x{},matchesOutputInterpolated={},contextCreated=yes}}; Projection{{path={},outputAspect={},backbufferSubrectAspect={},cameraAspectProvided={},cameraAspect={},usedAspect={},matrixGenerated={}}}",
-		settings.width, settings.height,
-		(uint64_t)settings.width == outputDesc.Width && settings.height == outputDesc.Height ? "yes" : "no",
-		projection.cameraPath, projection.outputAspect, subrectAspect,
-		projection.cameraAspectProvided ? "yes" : "no", projection.cameraAspect, projection.usedAspect,
-		projection.matrixGenerated ? "yes" : "no");
+		data.projectionMatrix);
 
 	data.outputResolution[0] = (float)settings.width;
 	data.outputResolution[1] = (float)settings.height;
@@ -717,9 +620,15 @@ bool FrameGenerator::CaptureRealFrame(ID3D12GraphicsCommandList* cmdList, const 
 		? ResolveOutputBase(toResolvedSubrect(frame.data.backBuffer, frame.backbufferSubrectValid),
 			toResolvedSubrect(previous.data.backBuffer, previous.backbufferSubrectValid), outputDesc.Width, outputDesc.Height)
 		: ResolvedOutputBase{ 0, 0, false };
-	SetOutputBase(selectedBase.x, selectedBase.y, selectedBase.usesSubrect);
+	SetOutputBase(selectedBase.x, selectedBase.y);
+	const auto& currentRegion = frame.data.backBuffer;
+	const auto& previousRegion = previous.data.backBuffer;
+	const bool sameBackbufferRegion = frame.backbufferSubrectValid && previous.backbufferSubrectValid &&
+		currentRegion.base.x == previousRegion.base.x && currentRegion.base.y == previousRegion.base.y &&
+		currentRegion.size.x == previousRegion.size.x && currentRegion.size.y == previousRegion.size.y;
+	if (context->pairValid && sameBackbufferRegion)
+		LogOutputLayout(frameSubrects[0], outputDesc, selectedBase.x, selectedBase.y, selectedBase.usesSubrect);
 	frame.valid = captured;
-	pendingFrameSignature = pendingFrameDiagnostics;
 	return true;
 }
 
@@ -735,7 +644,15 @@ FrameGenerator::InterpolateResult FrameGenerator::Interpolate(ID3D12GraphicsComm
 	for (uint32_t i = 0; i < frameCount; i++)
 	{
 		if (!context->outputs[i])
-			context->outputs[i] = CreateTexture(device.Get(), outputDesc, OutputState, L"dlssg-to-xefg output");
+		{
+			HRESULT allocationResult = S_OK;
+			context->outputs[i] = CreateTexture(device.Get(), outputDesc, OutputState, L"dlssg-to-xefg output",
+				allocationResult);
+			if (!context->outputs[i])
+				ReportIssue("error", "texture-allocation:xefg-output",
+					std::format("Failed to allocate XeFG output {}x{} format={} (HRESULT 0x{:08X})", outputDesc.Width,
+						outputDesc.Height, FormatName(outputDesc.Format), static_cast<uint32_t>(allocationResult)));
+		}
 
 		if (!context->outputs[i])
 			return InterpolateResult::Failed;
@@ -766,7 +683,6 @@ FrameGenerator::InterpolateResult FrameGenerator::Interpolate(ID3D12GraphicsComm
 	params.frameCount = 1;
 
 	auto result = XeFG::Execute(context->handle, cmdList, params);
-	executeResults[frameIndex - 1] = result;
 
 	if (result == XEFGD_RESULT_SUCCESS)
 		return InterpolateResult::Interpolated;
@@ -777,10 +693,10 @@ FrameGenerator::InterpolateResult FrameGenerator::Interpolate(ID3D12GraphicsComm
 		return InterpolateResult::Skipped;
 	}
 
-	ReportDiagnosticIssue("error", std::format("xefg-execute:{}", result),
-		std::format("XeFG Execute error: {}, frame {}/{}", result, frameIndex, frameCount));
+	ReportIssue("error", std::format("xefg-execute:{}", result),
+		std::format("XeFG Execute failed with result {} for {}x{} output", result, settings.width, settings.height));
 	context->pairValid = false;
-	SetOutputBase(0, 0, false);
+	SetOutputBase(0, 0);
 	return InterpolateResult::Failed;
 }
 
@@ -793,54 +709,45 @@ NGXResult FrameGenerator::Evaluate(ID3D12GraphicsCommandList* cmdList, const NGX
 	const uint32_t frameCount = std::clamp(params.GetOr<uint32_t>("DLSSG.MultiFrameCount", 1), 1u, MaxFrames);
 	const uint32_t frameIndex = std::clamp(params.GetOr<uint32_t>("DLSSG.MultiFrameIndex", 1), 1u, frameCount);
 	if (frameIndex == 1)
-		BeginFrameDiagnostics(params);
-	const uint32_t rawFrameIndex = params.GetOr<uint32_t>("DLSSG.MultiFrameIndex", 1);
-	const uint32_t rawFrameCount = params.GetOr<uint32_t>("DLSSG.MultiFrameCount", 1);
-	pendingCallDiagnostics += std::format("[raw={}/{},used={}/{}]", rawFrameIndex, rawFrameCount,
-		frameIndex, frameCount);
+		ResolveFrameSubrects(params);
 
 	if (!backbuffer || !output)
 	{
-		Log::Error("Missing backbuffer or output");
-		FinishFrameDiagnostics(frameIndex, frameCount, NGX_FAIL_INVALID_PARAMETER);
+		const char* missing = !backbuffer && !output ? "Backbuffer, OutputInterpolated" :
+			(!backbuffer ? "Backbuffer" : "OutputInterpolated");
+		ReportIssue("error", "resource-missing:backbuffer-output",
+			std::format("Missing required resource(s): {}", missing));
 		return NGX_FAIL_INVALID_PARAMETER;
 	}
 
 	if (outputReal)
 	{
 		if (!CopyChecked(cmdList, outputReal, OutputState, backbuffer, BackbufferState, "OutputReal <- Backbuffer"))
-		{
-			FinishFrameDiagnostics(frameIndex, frameCount, NGX_FAIL);
 			return NGX_FAIL;
-		}
 	}
 
 	if (!enabled)
 	{
 		if (context)
 			context->pairValid = false;
-		SetOutputBase(0, 0, false);
-
-		if (frameIndex == frameCount || frameIndex == 1)
-			FinishFrameDiagnostics(frameIndex, frameCount, NGX_SUCCESS);
+		SetOutputBase(0, 0);
 		return NGX_SUCCESS;
 	}
 
-	if (!params.GetOr<ID3D12Resource*>("DLSSG.Depth", nullptr) ||
-		!params.GetOr<ID3D12Resource*>("DLSSG.MVecs", nullptr))
+	auto depth = params.GetOr<ID3D12Resource*>("DLSSG.Depth", nullptr);
+	auto mvecs = params.GetOr<ID3D12Resource*>("DLSSG.MVecs", nullptr);
+	if (!depth || !mvecs)
 	{
-		Log::Error("Missing depth or motion vectors");
-		FinishFrameDiagnostics(frameIndex, frameCount, NGX_FAIL_INVALID_PARAMETER);
+		const char* missing = !depth && !mvecs ? "Depth, MVecs" : (!depth ? "Depth" : "MVecs");
+		ReportIssue("error", "resource-missing:depth-mvecs",
+			std::format("Missing required resource(s): {}", missing));
 		return NGX_FAIL_INVALID_PARAMETER;
 	}
 
 	if (frameIndex == 1)
 	{
 		if (!CaptureRealFrame(cmdList, params))
-		{
-			FinishFrameDiagnostics(frameIndex, frameCount, NGX_FAIL);
 			return NGX_FAIL;
-		}
 	}
 
 	const auto result = Interpolate(cmdList, output->GetDesc(), frameIndex, frameCount);
@@ -850,23 +757,14 @@ NGXResult FrameGenerator::Evaluate(ID3D12GraphicsCommandList* cmdList, const NGX
 	{
 		if (!CopyChecked(cmdList, output, OutputState, context->outputs[frameIndex - 1].Get(), OutputState,
 			"OutputInterpolated <- XeFGOutput"))
-		{
-			FinishFrameDiagnostics(frameIndex, frameCount, NGX_FAIL);
 			return NGX_FAIL;
-		}
 	}
 	else
 	{
 		if (!CopyChecked(cmdList, output, OutputState, backbuffer, BackbufferState,
 			"OutputInterpolated <- Backbuffer fallback"))
-		{
-			FinishFrameDiagnostics(frameIndex, frameCount, NGX_FAIL);
 			return NGX_FAIL;
-		}
 	}
 
-	const NGXResult finalResult = result == InterpolateResult::Failed ? NGX_FAIL : NGX_SUCCESS;
-	if (frameIndex == frameCount)
-		FinishFrameDiagnostics(frameIndex, frameCount, finalResult);
-	return finalResult;
+	return result == InterpolateResult::Failed ? NGX_FAIL : NGX_SUCCESS;
 }

@@ -7,7 +7,6 @@
 
 #include <array>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -22,10 +21,7 @@ public:
 	// 6x
 	static constexpr uint32_t MaxFrames = 5;
 
-	explicit FrameGenerator(ID3D12Device* device) : device(device)
-	{
-		executeResults.fill(std::numeric_limits<int32_t>::min());
-	}
+	explicit FrameGenerator(ID3D12Device* device) : device(device) {}
 
 	// Called once per generated frame, DLSSG.MultiFrameIndex 1 starts a new real frame
 	NGXResult Evaluate(ID3D12GraphicsCommandList* cmdList, const NGXParameter& params);
@@ -62,13 +58,33 @@ private:
 		uint32_t rawBaseY = 0;
 		uint32_t rawWidth = 0;
 		uint32_t rawHeight = 0;
-		bool baseXProvided = false;
-		bool baseYProvided = false;
-		bool widthProvided = false;
-		bool heightProvided = false;
-		bool fallback = false;
+		uint32_t providedMask = 0;
 		bool valid = false;
 		bool hasResource = false;
+	};
+
+	struct SubrectParameterKeys
+	{
+		const char* name;
+		const char* baseX;
+		const char* baseY;
+		const char* width;
+		const char* height;
+	};
+
+	struct OutputLayout
+	{
+		uint64_t outputWidth = 0;
+		uint32_t outputHeight = 0;
+		uint32_t regionX = 0;
+		uint32_t regionY = 0;
+		uint32_t regionWidth = 0;
+		uint32_t regionHeight = 0;
+		uint32_t outputBaseX = 0;
+		uint32_t outputBaseY = 0;
+		bool usesSubrect = false;
+
+		bool operator==(const OutputLayout&) const = default;
 	};
 
 	struct Context
@@ -95,11 +111,11 @@ private:
 	};
 
 	bool CreateContext();
-	void BeginFrameDiagnostics(const NGXParameter& params);
-	void FinishFrameDiagnostics(uint32_t frameIndex, uint32_t frameCount, NGXResult result);
-	void ReportDiagnosticIssue(std::string_view level, std::string key, std::string message);
-	void SetOutputBase(uint32_t x, uint32_t y, bool usesSubrect);
-	static std::string DescribeSubrect(std::string_view name, const SubrectInfo& info);
+	void ResolveFrameSubrects(const NGXParameter& params);
+	void ReportIssue(std::string_view level, std::string key, std::string message);
+	void SetOutputBase(uint32_t x, uint32_t y);
+	void LogOutputLayout(const SubrectInfo& subrect, D3D12_RESOURCE_DESC outputDesc,
+		uint32_t outputBaseX, uint32_t outputBaseY, bool usesSubrect);
 	bool CopyChecked(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* destination,
 		D3D12_RESOURCE_STATES destinationState, ID3D12Resource* source, D3D12_RESOURCE_STATES sourceState,
 		std::string_view operation);
@@ -114,7 +130,8 @@ private:
 		D3D12_RESOURCE_STATES sourceState, ComPtr<ID3D12Resource>& copy, std::string_view operation,
 		bool isDepth = false);
 	bool CaptureRealFrame(ID3D12GraphicsCommandList* cmdList, const NGXParameter& params);
-	static SubrectInfo ReadSubrect(const NGXParameter& params, const char* name, ID3D12Resource* resource);
+	static SubrectInfo ReadSubrect(const NGXParameter& params, const SubrectParameterKeys& keys,
+		ID3D12Resource* resource);
 	InterpolateResult Interpolate(ID3D12GraphicsCommandList* cmdList, D3D12_RESOURCE_DESC outputDesc,
 		uint32_t frameIndex, uint32_t frameCount);
 
@@ -123,16 +140,8 @@ private:
 	std::shared_ptr<Context> context;
 	bool createFailed = false; // retried when the settings change
 
-	uint64_t diagnosticRealFrameCount = 0;
-	std::string pendingFrameDiagnostics;
-	std::string pendingFrameSignature;
-	std::string pendingCopyDiagnostics;
-	std::string pendingCallDiagnostics;
-	std::array<SubrectInfo, 4> pendingSubrects{};
-	std::string lastFrameSignature;
+	std::array<SubrectInfo, 4> frameSubrects{};
 	std::unordered_map<std::string, uint64_t> issueCounts;
-	std::array<int32_t, MaxFrames> executeResults{};
-	xefgd_2d_t lastLoggedOutputBase{};
-	bool lastLoggedOutputBaseUsesSubrect = false;
-	bool hasLoggedOutputBase = false;
+	OutputLayout lastOutputLayout{};
+	bool hasOutputLayout = false;
 };

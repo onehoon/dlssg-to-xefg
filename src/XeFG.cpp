@@ -52,6 +52,7 @@ namespace
 
 	struct KnownBuild
 	{
+		const char* version;
 		uint32_t timeDateStamp;
 		uint32_t sizeOfImage;
 		uint32_t createContext, init, execute, destroy, setLoggingCallback, settingsInstance;
@@ -60,9 +61,11 @@ namespace
 
 	const KnownBuild knownBuilds[] = {
 		// libxess_fg.dll 1.3.1 from XeSS SDK 3.0.2
-		{ 0x69CB0F4D, 0x015ED000, 0x1853B0, 0x1871C0, 0x185800, 0x1874C0, 0x188060, 0x1A4610, &Layout_1_3_1 },
+		{ "1.3.1", 0x69CB0F4D, 0x015ED000, 0x1853B0, 0x1871C0, 0x185800, 0x1874C0, 0x188060, 0x1A4610,
+			&Layout_1_3_1 },
 		// libxess_fg.dll 1.3.4
-		{ 0x6A95ED0F, 0x015D7000, 0x1856A0, 0x1874B0, 0x185AF0, 0x1877B0, 0x188350, 0x1A4EA0, &Layout_1_3_4 },
+		{ "1.3.4", 0x6A95ED0F, 0x015D7000, 0x1856A0, 0x1874B0, 0x185AF0, 0x1877B0, 0x188350, 0x1A4EA0,
+			&Layout_1_3_4 },
 	};
 
 	// Builds other than the known ones are scanned for, only accepted when the struct layouts are likely unchanged
@@ -330,7 +333,7 @@ bool XeFG::Resolve(HMODULE module)
 	}
 	else
 	{
-		Log::Info("Unknown libxess_fg.dll build {:08X}, scanning for the API", image.nt->FileHeader.TimeDateStamp);
+		Log::Info("Scanning XeFG library build {:08X}", image.nt->FileHeader.TimeDateStamp);
 
 		if (!HasCompatibleVersion(module))
 			return false;
@@ -358,14 +361,10 @@ bool XeFG::Resolve(HMODULE module)
 		}
 	}
 
-	auto rva = [&image](const void* function)
-		{ return function ? static_cast<uint32_t>(static_cast<const uint8_t*>(function) - image.base) : 0; };
-
-	Log::Info("XeFG API ({}): create {:X}, init {:X}, execute {:X}, destroy {:X}, logging {:X}, settings {:X}",
-		known ? "known build" : "scanned", rva(api.createContext), rva(api.init), rva(api.execute),
-		rva(api.destroy), rva(api.setLoggingCallback), rva(api.settingsInstance));
-
-	return api.createContext && api.init && api.execute && api.destroy && api.settings;
+	const bool resolved = api.createContext && api.init && api.execute && api.destroy && api.settings;
+	if (resolved && known)
+		Log::Info("XeFG version {}", known->version);
+	return resolved;
 }
 
 void XeFG::SetMaxInterpolatedFrames(uint32_t maxFrames)

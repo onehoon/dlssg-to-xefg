@@ -35,12 +35,15 @@ namespace
 
 	bool TryModule(HMODULE module)
 	{
-		Log::Info("Trying {}", ModulePath(module).string());
+		const auto path = ModulePath(module);
 
 		if (XeFG::Resolve(module))
+		{
+			Log::Info("XeFG library loaded: {}", path.string());
 			return true;
+		}
 
-		Log::Warn("Incompatible libxess_fg.dll");
+		Log::Warn("Incompatible XeFG library: {}", path.string());
 		return false;
 	}
 

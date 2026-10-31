@@ -19,8 +19,7 @@ static NGXResult Init()
 {
 	static const bool logged = []
 		{
-			Log::Info("dlssg-to-xefg, XeFG replacing DLSS Frame Generation. Free software under GPLv3, if you paid for "
-				"it you've been scammed");
+			Log::Info("dlssg-to-xefg, XeFG replacing DLSS Frame Generation");
 			return true;
 		}();
 
