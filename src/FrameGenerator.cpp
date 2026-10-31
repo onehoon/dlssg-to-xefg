@@ -406,7 +406,7 @@ void FrameGenerator::BeginFrameDiagnostics(const NGXParameter& params)
 	auto outputReal = params.GetOr<ID3D12Resource*>("DLSSG.OutputReal", nullptr);
 	auto output = params.GetOr<ID3D12Resource*>("DLSSG.OutputInterpolated", nullptr);
 
-	pendingFrameDiagnostics = std::format("{}; {}; {}; {}; {}; {}; {}",
+	pendingFrameDiagnostics = std::format("{}; {}; {}; {}; {}; {}",
 		DescribeResource("Backbuffer", backbuffer), DescribeResource("HUDLess", hudless),
 		DescribeResource("Depth", depth), DescribeResource("MVecs", mvecs),
 		DescribeResource("OutputReal", outputReal), DescribeResource("OutputInterpolated", output));
