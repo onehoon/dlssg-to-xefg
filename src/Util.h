@@ -134,6 +134,11 @@ struct ResourceCopyCheck
 	ResourceCopyMismatch mismatch;
 };
 
+constexpr bool AreDistinctCopyResources(const void* destination, const void* source)
+{
+	return destination != source;
+}
+
 // Known DXGI typeless families. Unlisted formats remain Unknown so uncertain cases keep the old behavior.
 constexpr uint32_t CopyFormatFamily(DXGI_FORMAT format)
 {

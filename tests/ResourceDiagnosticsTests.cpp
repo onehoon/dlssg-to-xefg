@@ -69,6 +69,12 @@ int main()
 
 	Check(CheckResourceCopyCompatibility(rgba, sameRgba).compatibility == ResourceCopyCompatibility::Compatible,
 		"same-size identical formats are compatible");
+	int resourceIdentity = 0;
+	int otherResourceIdentity = 0;
+	Check(!AreDistinctCopyResources(&resourceIdentity, &resourceIdentity),
+		"CopyResource rejects identical source and destination objects");
+	Check(AreDistinctCopyResources(&resourceIdentity, &otherResourceIdentity),
+		"CopyResource accepts distinct source and destination objects");
 	Check(CheckResourceCopyCompatibility(rgba, typelessRgba).compatibility == ResourceCopyCompatibility::Compatible,
 		"same-family typeless and typed formats are compatible");
 	Check(CheckResourceCopyCompatibility(bgra, srgbBgra).compatibility == ResourceCopyCompatibility::Compatible,

@@ -496,6 +496,14 @@ bool FrameGenerator::CopyChecked(ID3D12GraphicsCommandList* cmdList, ID3D12Resou
 		pendingCopyDiagnostics += std::format("; {}=blocked:null", operation);
 		return false;
 	}
+	if (!AreDistinctCopyResources(destination, source))
+	{
+		const std::string message = std::format("Blocked CopyResource [{}]: source and destination are the same resource: {}",
+			operation, DescribeResource("resource", destination));
+		ReportDiagnosticIssue("error", std::format("copy:{}:same-resource", operation), message);
+		pendingCopyDiagnostics += std::format("; {}=blocked:same-resource", operation);
+		return false;
+	}
 
 	const auto destinationDesc = destination->GetDesc();
 	const auto sourceDesc = source->GetDesc();
