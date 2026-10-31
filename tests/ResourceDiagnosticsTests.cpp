@@ -1,0 +1,111 @@
+#include "../src/Util.h"
+
+#include <cstdio>
+
+namespace
+{
+	int failures = 0;
+
+	void Check(bool condition, const char* name)
+	{
+		if (condition)
+			return;
+
+		std::printf("FAIL: %s\n", name);
+		failures++;
+	}
+
+	D3D12_RESOURCE_DESC Texture(uint64_t width, uint32_t height, DXGI_FORMAT format)
+	{
+		D3D12_RESOURCE_DESC desc{};
+		desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+		desc.Width = width;
+		desc.Height = height;
+		desc.DepthOrArraySize = 1;
+		desc.MipLevels = 1;
+		desc.Format = format;
+		desc.SampleDesc.Count = 1;
+		desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+		return desc;
+	}
+}
+
+int main()
+{
+	const auto full = ResolveSubrect(1920, 1200, 0, 0, 1920, 1200);
+	Check(full.valid && !full.fallback && full.width == 1920 && full.height == 1200,
+		"valid full-screen subrect");
+
+	const auto letterbox = ResolveSubrect(1920, 1200, 0, 60, 1920, 1080);
+	Check(letterbox.valid && !letterbox.fallback && letterbox.baseY == 60,
+		"valid 1920x1080 region inside 1920x1200 resource");
+
+	const auto missing = ResolveSubrect(1920, 1200, 0, 0, 0, 0);
+	Check(missing.valid && missing.fallback && missing.width == 1920 && missing.height == 1200,
+		"missing subrect uses the existing full-resource fallback");
+
+	const auto zeroWidth = ResolveSubrect(1920, 1200, 0, 60, 0, 1080);
+	Check(zeroWidth.valid && zeroWidth.fallback && zeroWidth.baseY == 0,
+		"zero width keeps the existing full-resource fallback");
+	const auto zeroHeight = ResolveSubrect(1920, 1200, 0, 60, 1920, 0);
+	Check(zeroHeight.valid && zeroHeight.fallback && zeroHeight.baseY == 0,
+		"zero height keeps the existing full-resource fallback");
+
+	const auto outside = ResolveSubrect(1920, 1200, 0, 60, 1920, 1141);
+	Check(!outside.valid, "out-of-bounds subrect is rejected by validation");
+
+	const auto overflow = ResolveSubrect(1920, 1200, UINT32_MAX, 0, 2, 1);
+	Check(!overflow.valid, "subrect validation avoids base-plus-size overflow");
+
+	auto rgba = Texture(1920, 1200, DXGI_FORMAT_R8G8B8A8_UNORM);
+	auto sameRgba = Texture(1920, 1200, DXGI_FORMAT_R8G8B8A8_UNORM);
+	auto typelessRgba = Texture(1920, 1200, DXGI_FORMAT_R8G8B8A8_TYPELESS);
+	auto bgra = Texture(1920, 1200, DXGI_FORMAT_B8G8R8A8_UNORM);
+	auto srgbBgra = Texture(1920, 1200, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB);
+	auto smallRgba = Texture(1920, 1080, DXGI_FORMAT_R8G8B8A8_UNORM);
+	auto unknownFormat = Texture(1920, 1200, DXGI_FORMAT_NV12);
+	auto possibleCompressedReinterpret = Texture(480, 300, DXGI_FORMAT_BC3_UNORM);
+	auto rgba128 = Texture(1920, 1200, DXGI_FORMAT_R32G32B32A32_UINT);
+
+	Check(CheckResourceCopyCompatibility(rgba, sameRgba).compatibility == ResourceCopyCompatibility::Compatible,
+		"same-size identical formats are compatible");
+	Check(CheckResourceCopyCompatibility(rgba, typelessRgba).compatibility == ResourceCopyCompatibility::Compatible,
+		"same-family typeless and typed formats are compatible");
+	Check(CheckResourceCopyCompatibility(bgra, srgbBgra).compatibility == ResourceCopyCompatibility::Compatible,
+		"same-family linear and sRGB formats are compatible");
+	Check(CheckResourceCopyCompatibility(rgba, bgra).compatibility == ResourceCopyCompatibility::Incompatible,
+		"known different format families are incompatible");
+	Check(CheckResourceCopyCompatibility(rgba, smallRgba).compatibility == ResourceCopyCompatibility::Incompatible,
+		"different texture dimensions are incompatible");
+	Check(CheckResourceCopyCompatibility(rgba, unknownFormat).compatibility == ResourceCopyCompatibility::Unknown,
+		"unclassified format pairs remain diagnostic-only");
+	Check(CheckResourceCopyCompatibility(possibleCompressedReinterpret, rgba128).compatibility == ResourceCopyCompatibility::Unknown,
+		"possible block-compressed reinterpret copies remain diagnostic-only");
+
+	auto multisampled = sameRgba;
+	multisampled.SampleDesc.Count = 4;
+	Check(CheckResourceCopyCompatibility(rgba, multisampled).compatibility == ResourceCopyCompatibility::Incompatible,
+		"different sample counts are incompatible");
+	auto mipMismatch = sameRgba;
+	mipMismatch.MipLevels = 2;
+	Check(CheckResourceCopyCompatibility(rgba, mipMismatch).compatibility == ResourceCopyCompatibility::Incompatible,
+		"different mip counts are incompatible");
+	auto qualityMismatch = sameRgba;
+	qualityMismatch.SampleDesc.Quality = 1;
+	Check(CheckResourceCopyCompatibility(rgba, qualityMismatch).compatibility == ResourceCopyCompatibility::Incompatible,
+		"different sample qualities are incompatible");
+	auto dimensionMismatch = sameRgba;
+	dimensionMismatch.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+	Check(CheckResourceCopyCompatibility(rgba, dimensionMismatch).compatibility == ResourceCopyCompatibility::Incompatible,
+		"different resource dimensions are incompatible");
+	auto arrayMismatch = sameRgba;
+	arrayMismatch.DepthOrArraySize = 2;
+	Check(CheckResourceCopyCompatibility(rgba, arrayMismatch).compatibility == ResourceCopyCompatibility::Incompatible,
+		"different depth or array sizes are incompatible");
+
+	if (failures)
+		return 1;
+
+	std::puts("All resource diagnostic checks passed.");
+	return 0;
+}
