@@ -378,17 +378,18 @@ FrameGenerator::SubrectInfo FrameGenerator::ReadSubrect(const NGXParameter& para
 
 void FrameGenerator::ReportDiagnosticIssue(std::string_view level, std::string key, std::string message)
 {
-	if (key != lastIssueKey)
+	auto issue = issueCounts.find(key);
+	if (issue == issueCounts.end())
 	{
-		lastIssueKey = std::move(key);
-		lastIssueCount = 1;
-		Log::Write(level, message);
-		return;
+		constexpr size_t MaxTrackedIssues = 128;
+		if (issueCounts.size() >= MaxTrackedIssues)
+			issueCounts.clear();
+		issue = issueCounts.emplace(std::move(key), 0).first;
 	}
 
-	lastIssueCount++;
-	if ((lastIssueCount & (lastIssueCount - 1)) == 0)
-		Log::Write(level, std::format("{} (same issue observed {} times)", message, lastIssueCount));
+	const uint64_t count = ++issue->second;
+	if (count == 1 || (count & (count - 1)) == 0)
+		Log::Write(level, count == 1 ? message : std::format("{} (same issue observed {} times)", message, count));
 }
 
 void FrameGenerator::BeginFrameDiagnostics(const NGXParameter& params)

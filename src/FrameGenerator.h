@@ -11,6 +11,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 
 using Microsoft::WRL::ComPtr;
 
@@ -127,7 +128,6 @@ private:
 	std::string pendingCallDiagnostics;
 	std::array<SubrectInfo, 4> pendingSubrects{};
 	std::string lastFrameSignature;
-	std::string lastIssueKey;
-	uint64_t lastIssueCount = 0;
+	std::unordered_map<std::string, uint64_t> issueCounts;
 	std::array<int32_t, MaxFrames> executeResults{};
 };

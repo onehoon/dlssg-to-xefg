@@ -62,6 +62,8 @@ int main()
 	auto typelessRgba = Texture(1920, 1200, DXGI_FORMAT_R8G8B8A8_TYPELESS);
 	auto bgra = Texture(1920, 1200, DXGI_FORMAT_B8G8R8A8_UNORM);
 	auto srgbBgra = Texture(1920, 1200, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB);
+	auto bgra1200 = Texture(1920, 1200, DXGI_FORMAT_B8G8R8A8_UNORM);
+	auto rgba1080 = Texture(1920, 1080, DXGI_FORMAT_R8G8B8A8_UNORM);
 	auto smallRgba = Texture(1920, 1080, DXGI_FORMAT_R8G8B8A8_UNORM);
 	auto unknownFormat = Texture(1920, 1200, DXGI_FORMAT_NV12);
 	auto possibleCompressedReinterpret = Texture(480, 300, DXGI_FORMAT_BC3_UNORM);
@@ -79,6 +81,11 @@ int main()
 		"same-family typeless and typed formats are compatible");
 	Check(CheckResourceCopyCompatibility(bgra, srgbBgra).compatibility == ResourceCopyCompatibility::Compatible,
 		"same-family linear and sRGB formats are compatible");
+	Check(!IsBlockCompressedFormat(DXGI_FORMAT_B8G8R8A8_UNORM), "BGRA8 is not a BC format");
+	Check(!IsBlockCompressedFormat(DXGI_FORMAT_B8G8R8A8_UNORM_SRGB), "BGRA8 sRGB is not a BC format");
+	Check(IsBlockCompressedFormat(DXGI_FORMAT_BC3_UNORM), "BC3 is a BC format");
+	Check(CheckResourceCopyCompatibility(bgra1200, rgba1080).compatibility == ResourceCopyCompatibility::Incompatible,
+		"mismatched BGRA8/RGBA8 dimensions are incompatible");
 	Check(CheckResourceCopyCompatibility(rgba, bgra).compatibility == ResourceCopyCompatibility::Incompatible,
 		"known different format families are incompatible");
 	Check(CheckResourceCopyCompatibility(rgba, smallRgba).compatibility == ResourceCopyCompatibility::Incompatible,
