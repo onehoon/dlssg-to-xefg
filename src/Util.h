@@ -87,6 +87,13 @@ struct ResolvedSubrect
 	bool valid;
 };
 
+struct ResolvedOutputBase
+{
+	uint32_t x;
+	uint32_t y;
+	bool usesSubrect;
+};
+
 // Keeps the existing NGX behavior: if either size is zero, use the entire resource.
 constexpr ResolvedSubrect ResolveSubrect(uint64_t textureWidth, uint32_t textureHeight, uint32_t baseX,
 	uint32_t baseY, uint32_t width, uint32_t height)
@@ -106,6 +113,24 @@ constexpr ResolvedSubrect ResolveSubrect(uint64_t textureWidth, uint32_t texture
 		height <= textureHeight - baseY;
 
 	return { baseX, baseY, width, height, fallback, valid };
+}
+
+// Keep XeFG's output at the full texture size and offset it only when both real frames share a valid partial region.
+constexpr ResolvedOutputBase ResolveOutputBase(const ResolvedSubrect& current, const ResolvedSubrect& previous,
+	uint64_t outputWidth, uint64_t outputHeight)
+{
+	if (!current.valid || !previous.valid || current.width == 0 || current.height == 0 ||
+		current.baseX != previous.baseX || current.baseY != previous.baseY ||
+		current.width != previous.width || current.height != previous.height)
+		return { 0, 0, false };
+
+	if (current.baseX > outputWidth || current.baseY > outputHeight ||
+		current.width > outputWidth - current.baseX || current.height > outputHeight - current.baseY)
+		return { 0, 0, false };
+
+	const bool partial = current.baseX != 0 || current.baseY != 0 ||
+		current.width != outputWidth || current.height != outputHeight;
+	return partial ? ResolvedOutputBase{ current.baseX, current.baseY, true } : ResolvedOutputBase{ 0, 0, false };
 }
 
 enum class ResourceCopyCompatibility

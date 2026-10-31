@@ -392,6 +392,23 @@ void FrameGenerator::ReportDiagnosticIssue(std::string_view level, std::string k
 		Log::Write(level, count == 1 ? message : std::format("{} (same issue observed {} times)", message, count));
 }
 
+void FrameGenerator::SetOutputBase(uint32_t x, uint32_t y, bool usesSubrect)
+{
+	if (!context)
+		return;
+
+	std::fill(std::begin(context->outputBases), std::end(context->outputBases), xefgd_2d_t{ x, y });
+
+	if (!hasLoggedOutputBase || x != lastLoggedOutputBase.x || y != lastLoggedOutputBase.y ||
+		usesSubrect != lastLoggedOutputBaseUsesSubrect)
+	{
+		Log::Info("XeFG output base changed: {} ({},{})", usesSubrect ? "subrect" : "origin", x, y);
+		lastLoggedOutputBase = { x, y };
+		lastLoggedOutputBaseUsesSubrect = usesSubrect;
+		hasLoggedOutputBase = true;
+	}
+}
+
 void FrameGenerator::BeginFrameDiagnostics(const NGXParameter& params)
 {
 	diagnosticRealFrameCount++;
@@ -640,10 +657,12 @@ bool FrameGenerator::CaptureRealFrame(ID3D12GraphicsCommandList* cmdList, const 
 	{
 		context->pairValid = false;
 		frame.valid = false;
+		SetOutputBase(0, 0, false);
 		return false;
 	}
 	const bool captured = backbufferCapture == CaptureResult::Captured && depthCapture == CaptureResult::Captured &&
 		mvecsCapture == CaptureResult::Captured;
+	frame.backbufferSubrectValid = pendingSubrects[0].valid;
 
 	auto& data = frame.data;
 	data = {};
@@ -690,6 +709,15 @@ bool FrameGenerator::CaptureRealFrame(ID3D12GraphicsCommandList* cmdList, const 
 
 	// XeFG needs both frames to have hudless or neither
 	context->pairValid = captured && previous.valid && !reset && (frame.hudless != nullptr) == (previous.hudless != nullptr);
+	const auto toResolvedSubrect = [](const xefgd_resource_t& region, bool valid)
+		{
+			return ResolvedSubrect{ region.base.x, region.base.y, region.size.x, region.size.y, false, valid };
+		};
+	const ResolvedOutputBase selectedBase = context->pairValid
+		? ResolveOutputBase(toResolvedSubrect(frame.data.backBuffer, frame.backbufferSubrectValid),
+			toResolvedSubrect(previous.data.backBuffer, previous.backbufferSubrectValid), outputDesc.Width, outputDesc.Height)
+		: ResolvedOutputBase{ 0, 0, false };
+	SetOutputBase(selectedBase.x, selectedBase.y, selectedBase.usesSubrect);
 	frame.valid = captured;
 	pendingFrameSignature = pendingFrameDiagnostics;
 	return true;
@@ -752,6 +780,7 @@ FrameGenerator::InterpolateResult FrameGenerator::Interpolate(ID3D12GraphicsComm
 	ReportDiagnosticIssue("error", std::format("xefg-execute:{}", result),
 		std::format("XeFG Execute error: {}, frame {}/{}", result, frameIndex, frameCount));
 	context->pairValid = false;
+	SetOutputBase(0, 0, false);
 	return InterpolateResult::Failed;
 }
 
@@ -790,6 +819,7 @@ NGXResult FrameGenerator::Evaluate(ID3D12GraphicsCommandList* cmdList, const NGX
 	{
 		if (context)
 			context->pairValid = false;
+		SetOutputBase(0, 0, false);
 
 		if (frameIndex == frameCount || frameIndex == 1)
 			FinishFrameDiagnostics(frameIndex, frameCount, NGX_SUCCESS);

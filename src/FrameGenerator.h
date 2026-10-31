@@ -51,6 +51,7 @@ private:
 		ComPtr<ID3D12Resource> depth;
 		ComPtr<ID3D12Resource> mvecs;
 		xefgd_frame_t data{};
+		bool backbufferSubrectValid = false;
 		bool valid = false;
 	};
 
@@ -97,6 +98,7 @@ private:
 	void BeginFrameDiagnostics(const NGXParameter& params);
 	void FinishFrameDiagnostics(uint32_t frameIndex, uint32_t frameCount, NGXResult result);
 	void ReportDiagnosticIssue(std::string_view level, std::string key, std::string message);
+	void SetOutputBase(uint32_t x, uint32_t y, bool usesSubrect);
 	static std::string DescribeSubrect(std::string_view name, const SubrectInfo& info);
 	bool CopyChecked(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* destination,
 		D3D12_RESOURCE_STATES destinationState, ID3D12Resource* source, D3D12_RESOURCE_STATES sourceState,
@@ -130,4 +132,7 @@ private:
 	std::string lastFrameSignature;
 	std::unordered_map<std::string, uint64_t> issueCounts;
 	std::array<int32_t, MaxFrames> executeResults{};
+	xefgd_2d_t lastLoggedOutputBase{};
+	bool lastLoggedOutputBaseUsesSubrect = false;
+	bool hasLoggedOutputBase = false;
 };

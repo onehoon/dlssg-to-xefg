@@ -57,6 +57,32 @@ int main()
 	const auto overflow = ResolveSubrect(1920, 1200, UINT32_MAX, 0, 2, 1);
 	Check(!overflow.valid, "subrect validation avoids base-plus-size overflow");
 
+	const auto centered169 = ResolveSubrect(1920, 1200, 0, 60, 1920, 1080);
+	const auto centeredOutputBase = ResolveOutputBase(centered169, centered169, 1920, 1200);
+	Check(centeredOutputBase.x == 0 && centeredOutputBase.y == 60,
+		"centered 1920x1080 region in 1920x1200 output uses base (0,60)");
+	const auto full1080 = ResolveSubrect(1920, 1080, 0, 0, 1920, 1080);
+	const auto full1080OutputBase = ResolveOutputBase(full1080, full1080, 1920, 1080);
+	Check(full1080OutputBase.x == 0 && full1080OutputBase.y == 0,
+		"full 1920x1080 output keeps origin base");
+	const auto missingOutputBase = ResolveOutputBase(missing, missing, 1920, 1200);
+	Check(missingOutputBase.x == 0 && missingOutputBase.y == 0,
+		"missing subrect fallback keeps origin base");
+	const auto native1610 = ResolveSubrect(1920, 1200, 0, 0, 1920, 1200);
+	const auto native1610OutputBase = ResolveOutputBase(native1610, native1610, 1920, 1200);
+	Check(native1610OutputBase.x == 0 && native1610OutputBase.y == 0,
+		"full native 1920x1200 output keeps origin base");
+	const auto invalidOutputBase = ResolveOutputBase(outside, centered169, 1920, 1200);
+	Check(invalidOutputBase.x == 0 && invalidOutputBase.y == 0,
+		"invalid subrect falls back to origin base");
+	const auto outOfOutput = ResolveOutputBase(centered169, centered169, 1920, 1139);
+	Check(outOfOutput.x == 0 && outOfOutput.y == 0,
+		"subrect that exceeds output bounds falls back to origin base");
+	const auto shifted169 = ResolveSubrect(1920, 1200, 0, 59, 1920, 1080);
+	const auto conflictingOutputBase = ResolveOutputBase(centered169, shifted169, 1920, 1200);
+	Check(conflictingOutputBase.x == 0 && conflictingOutputBase.y == 0,
+		"different pair regions fall back to origin base");
+
 	auto rgba = Texture(1920, 1200, DXGI_FORMAT_R8G8B8A8_UNORM);
 	auto sameRgba = Texture(1920, 1200, DXGI_FORMAT_R8G8B8A8_UNORM);
 	auto typelessRgba = Texture(1920, 1200, DXGI_FORMAT_R8G8B8A8_TYPELESS);
